@@ -6,7 +6,7 @@ Constraint-based modeling for allelic variation (COBRA for fitness landSCAPEs)
 2. Extend allele-phenotype associations to metabolic-phenotype associations.
 3. Population Flux Variability Analysis (popFVA)
 
-![][1](/cobrascape\_fig.png?raw=true)
+![cobrafig](\cobrascape\_fig.png?raw=true)
 
 Installation
 	git clone https://github.com/erolkavvas/cobrascape.git
@@ -33,5 +33,3 @@ Application to large-scale _M. tuberculosis_ antimicrobial resistance (AMR) data
   - Generates descriptive data for the models sampled in  `01_gen_ensemble.py`
 ### TO DO
 - Integrate population functionality with MEDUSA
-
-[1]:	# "cobrafig"
