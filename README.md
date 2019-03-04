@@ -6,7 +6,7 @@ Constraint-based modeling for allelic variation (COBRA for fitness landSCAPEs)
 2. Extend allele-phenotype associations to metabolic-phenotype associations.
 3. Population Flux Variability Analysis (popFVA)
 
-![cobrafig](\cobrascape\_fig.png?raw=true)
+![cobrafig](/cobrascape\_fig.png?raw=true)
 
 Installation
 	git clone https://github.com/erolkavvas/cobrascape.git
