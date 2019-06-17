@@ -1,8 +1,8 @@
 # cobrascape
-Constraint-based modeling for allelic variation (COBRA for fitness landSCAPEs)
+COBRA for fitnless landSCAPEs (cobrascape). Specifically, cobrascape models a population of strain-specific genome-scale models at the allele level.
 
-### Goals
-1. Infer dominant evolutionary forces (metabolic selection pressures) from large-scale genomics-phenomics data (e.g., GWAS data).
+### Features of cobrascape
+1. Model a population of 
 2. Extend allele-phenotype associations to metabolic-phenotype associations.
 3. Population Flux Variability Analysis (popFVA)
 
