@@ -754,9 +754,9 @@ def clean_base_model(mod_, open_exchange=False, verbose=True):
     ### Removes reactions that are blocked with the constraints set on exchange reaction flux
     mod = mod_.copy()
     before_mod_genes=len(mod.genes)
-    blcked_reacts = find_blocked_reactions(mod, reaction_list=None, zero_cutoff=1e-09, open_exchanges=open_exchange)
+    blcked_reacts = find_blocked_reactions(mod, reaction_list=None, zero_cutoff=1e-6, open_exchanges=open_exchange)
     mod.remove_reactions(blcked_reacts, remove_orphans=True)
-    check_blcked_reacts = find_blocked_reactions(mod, reaction_list=None, zero_cutoff=1e-09, open_exchanges=open_exchange)
+    check_blcked_reacts = find_blocked_reactions(mod, reaction_list=None, zero_cutoff=1e-6, open_exchanges=open_exchange)
     if verbose==True:
         print("# genes=",str(before_mod_genes),"-> removing",len(blcked_reacts),"blocked reactions","-> # genes=",len(mod.genes))
     return mod
@@ -799,6 +799,7 @@ def create_action_set(number_of_actions=4, add_no_change=True):
     return action_list
 
 
+### Older version of that had issues where the actions were at the minimum and maximum instead of inbetween
 def rxn_to_constraints_samples(player_list, action_list, samps):
     """ Assign flux values to constraints for each allele-catalyzed reaction using FVA
         Input:
@@ -826,6 +827,55 @@ def rxn_to_constraints_samples(player_list, action_list, samps):
                 gradient_steps = len(action_list)/2
                 min_to_mean_grad = np.arange(min_flux, mean_flux, (mean_flux-min_flux)/gradient_steps)
                 max_to_mean_grad = np.arange(mean_flux, max_flux, (max_flux-mean_flux)/gradient_steps)
+
+                for a in action_list:
+                    if a == "no_change":
+                        action_to_constraints_dict.update({a: 0})
+                    else:
+                        dec_or_inc = a.split("_")[0]
+                        grad_dist = int(a.split("_")[1])
+
+                        # It doesn't matter if mean_flux is less than or greater than 0.
+
+                        if dec_or_inc == "lb": # Change upper_bound
+                            action_to_constraints_dict.update({a: min_to_mean_grad[grad_dist]})
+                        elif dec_or_inc == "ub": # Change lower_bound
+                            action_to_constraints_dict.update({a: max_to_mean_grad[grad_dist]})
+            allele_rxns_constraint_dict[all_player][react].update(action_to_constraints_dict)
+        
+    return allele_rxns_constraint_dict
+
+
+### Corrected version of rxn_to_constraints_samples
+def rxn_to_constraints_samples_v2(player_list, action_list, samps):
+    """ Assign flux values to constraints for each allele-catalyzed reaction using FVA
+        Input:
+            - list of Allele objects, list of actions, the fva df
+        Returns:
+            - dictionary of actions to bound changes.
+            ex:  {"lb_0": -2.1, "lb_1": -1.5, .... "ub_0": .8, ....}
+    """
+    allele_rxns_constraint_dict = {}
+    for all_player in player_list:
+        allele_rxns_constraint_dict[all_player] = {}
+        for react in all_player.cobra_reactions.keys():
+            allele_rxns_constraint_dict[all_player][react] = {}
+            max_flux, min_flux = max(samps[react]), min(samps[react])
+            mean_flux = np.mean(samps[react])
+    
+            action_to_constraints_dict = {}
+            # for reactions that can't have any change, keep their bounds at a single value.
+            if max_flux == min_flux: 
+                for a in action_list:
+                    action_to_constraints_dict.update({a: max_flux})
+            else:
+                left_bound_distance = mean_flux - min_flux
+
+                gradient_steps = int(len(action_list)/2)
+                # min_to_mean_grad = np.arange(min_flux, mean_flux, (mean_flux-min_flux)/gradient_steps)
+                # max_to_mean_grad = np.arange(mean_flux, max_flux, (max_flux-mean_flux)/gradient_steps)
+                min_to_mean_grad = np.arange(min_flux, mean_flux, (mean_flux-min_flux)/(gradient_steps+1))[-gradient_steps:]
+                max_to_mean_grad = np.arange(mean_flux, max_flux, (max_flux-mean_flux)/(gradient_steps+1))[-gradient_steps:]
 
                 for a in action_list:
                     if a == "no_change":
@@ -1025,7 +1075,7 @@ def models_optimize_parallel(model, react_set, fract_opt=0.1, save_file_loc=None
 ### ---------------------------------------------------------------------------------
 ### --- Perform random sampling of game landscape to compare to learned landscape ---
 ### ---------------------------------------------------------------------------------
-def sample_species(model,save_samples_dir,variants,flux_samples, rxn_set=None,
+def sample_species(model,save_samples_dir,variants,flux_samples, fva_rxn_set="var_reacts", start_samp=None,
                     samples_n=10,fva=False,fva_frac_opt=0.1,action_n=6,add_na_bound=True,processes=cpu_count()):
     """ sample_species generates random models samples consisting of a random allele-constraint map 
         and a corresponding popFVA landscape
@@ -1042,16 +1092,18 @@ def sample_species(model,save_samples_dir,variants,flux_samples, rxn_set=None,
         A unique genome-scale model corresponding to this strain
     """
     ### Create action set for each player and mapping to model changes.
-    actions = create_action_set(number_of_actions=action_n, add_no_change=add_na_bound)
-    variant_rxn_action_dict = rxn_to_constraints_samples(variants, actions, flux_samples)
-    # variant_rxn_action_dict = {x.id: y for x, y in variant_rxn_action_dict.iteritems()}
-    allele_reacts_set = []
-    for x in variants:
-        allele_reacts_set.extend(x.cobra_reactions.keys())
-    allele_reacts_set = list(set(allele_reacts_set))
+    actions = create_action_set(number_of_actions=action_n, add_no_change=add_na_bound) ### IMPORTANT- THIS IS UPDATED!!
+    variant_rxn_action_dict = rxn_to_constraints_samples_v2(variants, actions, flux_samples)
+    # variant_rxn_action_dict = rxn_to_constraints_samples(variants, actions, flux_samples)
 
-    if rxn_set!=None:
-        allele_reacts_set=rxn_set
+    ### Get list of reactions used in popFVA. Won't be used if fva = False, since single objective is solved.
+    popfva_reacts_set = []
+    if fva_rxn_set=="all_reacts":
+        popfva_reacts_set=list([x.id for x in model.base_cobra_model.reactions])
+    elif fva_rxn_set=="var_reacts":
+        for x in variants:
+            popfva_reacts_set.extend(x.cobra_reactions.keys())
+        popfva_reacts_set = list(set(popfva_reacts_set))
     
     ### initalize variables
     variant_indices = range(len(variants))
@@ -1066,6 +1118,9 @@ def sample_species(model,save_samples_dir,variants,flux_samples, rxn_set=None,
         start_t = max(int_list)+1
     else:
         start_t = 0
+
+    if start_samp!=None: # For generating samples on another computer so the 2 samplers don't overlap.
+        start_t = start_samp
 
     print("output: sampling",str(samples_n),"points from the", str(model.id), "landscape, start_t=", start_t)
 
@@ -1131,10 +1186,10 @@ def sample_species(model,save_samples_dir,variants,flux_samples, rxn_set=None,
 
 
         # with ProcessPool(processes, initializer=species_init_Objective, initargs=(model,allele_reacts_set,fva_frac_opt,)) as pool:
-        with ProcessPool(processes, initializer=species_init_Objective, initargs=(model,allele_reacts_set,fva_frac_opt)) as pool:
+        with ProcessPool(processes, initializer=species_init_Objective, initargs=(model,popfva_reacts_set,fva_frac_opt)) as pool:
             try:
                 if fva==True:
-                    future = pool.map(models_optimize_fva, [x.id for x in model.strains], timeout=50)
+                    future = pool.map(models_optimize_fva, [x.id for x in model.strains], timeout=100)
                     future_iterable = future.result()
                     pheno = list(future_iterable)
                     save_json_obj(dict(pheno), save_samples_dir+"sample_"+str(t)+"_FVA.json")
@@ -1162,7 +1217,7 @@ def sample_species(model,save_samples_dir,variants,flux_samples, rxn_set=None,
 
 
 
-def compute_constrained_species(model,var_dec_map,variants,flux_samples,rxn_set=None,
+def compute_constrained_species(model,var_dec_map,variants,flux_samples,fva_rxn_set="all_reacts",
                                 fva=False,fva_frac_opt=0.1,action_n=6,add_na_bound=True,processes=cpu_count()):
     """sample_species is a function for the un-biased random sampling of allelic-constraint genome-scale models
     
@@ -1170,6 +1225,10 @@ def compute_constrained_species(model,var_dec_map,variants,flux_samples,rxn_set=
     ----------
     model : CobraScape Species object 
         The landscape the alleles will play on
+    var_dec_map : string
+        A human readable name for the allele
+    rxn_set : one of the following strings --> ["all_reacts", "var_reacts"]
+        List of metabolic reaction ids in base cobra model that will be used in FVA. Used for computational speed up.
     name : string
         A human readable name for the allele
     alleles : string
@@ -1179,16 +1238,17 @@ def compute_constrained_species(model,var_dec_map,variants,flux_samples,rxn_set=
     """
     ### Create action set for each player and mapping to model changes.
     actions = create_action_set(number_of_actions=action_n, add_no_change=add_na_bound)
-    variant_rxn_action_dict = rxn_to_constraints_samples(variants, actions, flux_samples, "react?")
-    # variant_rxn_action_dict = {x.id: y for x, y in variant_rxn_action_dict.iteritems()}
-    allele_reacts_set = []
-    for x in variants:
-        allele_reacts_set.extend(x.cobra_reactions.keys())
-    allele_reacts_set = list(set(allele_reacts_set))
+    variant_rxn_action_dict = rxn_to_constraints_samples(variants, actions, flux_samples) ### IMPORTANT- THIS IS OLD! v2 available
 
-    if rxn_set!=None:
-        allele_reacts_set=rxn_set
-    
+    ### Get list of reactions used in popFVA. Won't be used if fva = False, since single objective is solved.
+    popfva_reacts_set = []
+    if fva_rxn_set=="all_reacts":
+        popfva_reacts_set=list([x.id for x in model.base_cobra_model.reactions])
+    elif fva_rxn_set=="var_reacts":
+        for x in variants:
+            popfva_reacts_set.extend(x.cobra_reactions.keys())
+        popfva_reacts_set = list(set(popfva_reacts_set))
+        
     ### initalize variables
     variant_indices = range(len(variants))
     species_pheno_trajectory = {}
@@ -1214,7 +1274,7 @@ def compute_constrained_species(model,var_dec_map,variants,flux_samples,rxn_set=
                 for strain_react in allele_play.cobra_reactions[react]:
                     strain_react.upper_bound = base_bound
                     strain_react.lower_bound = constrnt_actions[constrnt]
-        ### if ub constraint is picked, use base model lb for lb constraint            
+        ### if ub constraint is picked, use base model lb for lb constraint
         elif constrnt.split("_")[0] == "ub":
             for react, constrnt_actions in variant_rxn_action_dict[allele_play].items():
                 base_bound = model.base_cobra_model.reactions.get_by_id(react).lower_bound
@@ -1249,21 +1309,16 @@ def compute_constrained_species(model,var_dec_map,variants,flux_samples,rxn_set=
                 else:
                     str_obj.cobra_model.reactions.get_by_id(rxn).upper_bound=model.base_cobra_model.reactions.get_by_id(rxn).upper_bound
 
-    with ProcessPool(processes, initializer=species_init_Objective, initargs=(model,allele_reacts_set,fva_frac_opt)) as pool:
+    with ProcessPool(processes, initializer=species_init_Objective, initargs=(model,popfva_reacts_set,fva_frac_opt)) as pool:
         try:
             if fva==True:
-                future = pool.map(models_optimize_fva, [x.id for x in model.strains], timeout=100)
+                future = pool.map(models_optimize_fva, [x.id for x in model.strains], timeout=300)
                 future_iterable = future.result()
                 pheno = list(future_iterable)
-                save_json_obj(dict(pheno), save_samples_dir+"sample_"+str(t)+"_FVA.json")
-                save_json_obj(variant_id_dec_dict, save_samples_dir+"sample_"+str(t)+"_varDecision.json")
-                del pheno
             else:
-                future = pool.map(models_optimize_objective, [x.id for x in model.strains], timeout=20)
+                future = pool.map(models_optimize_objective, [x.id for x in model.strains], timeout=40)
                 future_iterable = future.result()
                 pheno = list(future_iterable)
-                save_json_obj(dict(pheno), save_samples_dir+"sample_"+str(t)+".json")
-                del pheno
 
         except TimeoutError as error:
             print("function took longer than %d seconds" % error.args[1])
@@ -1275,6 +1330,84 @@ def compute_constrained_species(model,var_dec_map,variants,flux_samples,rxn_set=
     pool.join()
     return pheno
 
+
+
+def set_single_rxn_objective(species_mod, obj_id, obj_direction="max"):
+    """ Takes in a single reaction and direction to optimize and sets this objective
+        for each strain-specific GEM.
+    """
+    for strain in tqdm(species_mod.strains):
+        species_mod.strains.get_by_id(strain.id).cobra_model.objective=obj_id
+        species_mod.strains.get_by_id(strain.id).cobra_model.direction=obj_direction
+    return species_mod
+
+
+### Function for setting objective using a linear function of popFVA features
+def set_linear_popfva_objective(species_mod, r_filt_df, obj_dir='max', obj_name="pop_objective"):
+    """ Takes in a 1 column dataframe of (popfva features, objective coefficients)
+        and sets the objective function for each strain in the cobrascape species
+        object accordingly.
+
+        r_filt_df: pandas Series
+            Indices are popFVA features (i.e., rxn1_max, rxn1_min, ...)
+
+        The popFVA features are transformed to basic variables in FBA by replacing rxn_max with 
+        rxn forward variable and rxn_min with rxn reverse variable.
+    """
+    # pca_popsol_list = []
+    for strain_obj in tqdm(species_mod.strains):
+        strain_model = strain_obj.cobra_model #.copy()
+        strain_model.objective = strain_model.problem.Objective(0, direction=obj_dir, sloppy=False, 
+            name=obj_name)
+        strain_model.solver.update()
+
+        objective_coeff_popfva = {}
+        for popfva_feat, r_coef in r_filt_df.iterrows():
+            r_coef_value = r_coef.values[0]
+            if "_max" in popfva_feat:
+                rxn_id= popfva_feat.split("_max")[0]
+                rxn_dir = "max"
+            elif "_min" in popfva_feat:
+                rxn_id = popfva_feat.split("_min")[0]
+                rxn_dir = "min"
+            # print(popfva_feat,rxn_id,rxn_dir, r_coef_value)
+
+            react_obj = strain_model.reactions.get_by_id(rxn_id) #.flux_expression
+            if rxn_dir=="min":
+                rxn_opt_var = react_obj.reverse_variable
+            elif rxn_dir=="max":
+                rxn_opt_var = react_obj.forward_variable
+            objective_coeff_popfva.update({rxn_opt_var: r_coef_value})
+
+        strain_model.objective.set_linear_coefficients(objective_coeff_popfva)
+        objective_obj = strain_model.objective
+        species_mod.strains.get_by_id(strain_obj.id).cobra_model.objective=objective_obj
+    return species_mod
+
+
+def get_popobj_sol_df(popsol_obj):
+    """ Takes in a non-popFVA single objective population FVA solution and Returns 4 pandas dataframes :
+            (strains, shadow prices), (strains, fluxes), (strains, reduced costs), (strains, objective values)
+    """
+    pop_fluxes = pd.DataFrame()
+    pop_sprices = pd.DataFrame()
+    pop_rcosts = pd.DataFrame()
+    pop_sol = {}
+    for strain_id, sol_obj in popsol_obj:
+        sprices = sol_obj.shadow_prices.copy()
+        fluxes = sol_obj.fluxes.copy()
+        rcosts = sol_obj.reduced_costs.copy()
+        sol_val = sol_obj.objective_value
+        sprices.name=strain_id
+        fluxes.name=strain_id
+        rcosts.name=strain_id
+        pop_fluxes = pd.concat([pop_fluxes, pd.DataFrame(fluxes)], axis=1)
+        pop_sprices = pd.concat([pop_sprices, pd.DataFrame(sprices)], axis=1)
+        pop_rcosts = pd.concat([pop_rcosts, pd.DataFrame(rcosts)], axis=1)
+        pop_sol.update({strain_id: sol_val})
+    pop_sol_df = pd.DataFrame.from_dict(pop_sol,orient="index")
+    pop_sol_df.columns = ["sol"]
+    return pop_fluxes.T, pop_sprices.T, pop_rcosts.T, pop_sol_df
 
 
 ### Helper functions
