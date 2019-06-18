@@ -14,6 +14,7 @@ from cobra.core.object import Object
 
 from functools import partial
 import pandas as pd
+from multiprocessing import cpu_count
 
 
 class Species(Object):
@@ -187,7 +188,7 @@ class Species(Object):
             raise ValueError('No base cobra model found in  {}')
 
     
-    def optimize_strains(self, parallel=False, processes=4):
+    def optimize_strains(self, fva_rxn_set="var_reacts", parallel=True, fva=False, fract_opt=0.1, processes=cpu_count()):
         """Will add a list of alleles to the model object and add new
         constraints accordingly. Alleles are additionally populated with strain
         GEM reactions so that the models can be easily influenced by alterting 
@@ -197,17 +198,28 @@ class Species(Object):
         ----------
         processes : Number of cores to parallelize the population optimization
         """
+        
 
         cobra_solution_dict = {}
         if self.base_cobra_model:
 
-            for strain in tqdm(self.strains):
-                if strain._cobra_model:
-                    cobra_solution_dict[strain.id] = strain._cobra_model.optimize()
-                else:
-                    raise ValueError('No cobra model in strain: run "update_strains_cobra_model()" to fix')
-
-            self.solution = cobra_solution_dict
+            if parallel==True:
+                react_set = []
+                if fva_rxn_set=="all_reacts":
+                    react_set=list([x.id for x in self.base_cobra_model.reactions])
+                elif fva_rxn_set=="var_reacts":
+                    for x in self.alleles:
+                        react_set.extend(x.cobra_reactions.keys())
+                    react_set = list(set(react_set))
+                self.solution = models_optimize_parallel(self, react_set, fract_opt=fract_opt, save_file_loc=None, fva=fva, processes=processes)
+            
+            else:
+                for strain in tqdm(self.strains):
+                    if strain._cobra_model:
+                        cobra_solution_dict[strain.id] = strain._cobra_model.optimize()
+                    else:
+                        raise ValueError('No cobra model in strain: run "update_strains_cobra_model()" to fix')
+                self.solution = cobra_solution_dict
         else:
             raise ValueError('No base cobra model found in  {}')
         
@@ -1038,7 +1050,7 @@ def models_optimize_fva(x):
     return result_return 
 
 
-def models_optimize_parallel(model, react_set, fract_opt=0.1, save_file_loc=None, fva=True):
+def models_optimize_parallel(model, react_set, fract_opt=0.1, save_file_loc=None, fva=False, processes=cpu_count()):
     """ Performs population flux variability analysis (popFVA) in parallel using Pebble
         model: CobraScape Species object
         react_set: list of model reactions to be minimized and maximized.
